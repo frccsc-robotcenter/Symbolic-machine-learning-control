@@ -12,6 +12,7 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <random>
 
 
 /**
@@ -127,8 +128,8 @@ public:
     // ===== ГЕНЕРИРОВАНИЕ ВАРИАЦИЙ =====
     
     /// Генерировать вариацию (вызывает NOP.GenVar)
-    void generateVariation(std::vector<int>& variation) {
-        net_oper_.GenVar(variation);
+    void generateVariation(std::vector<int>& variation, std::mt19937& rng) {
+        net_oper_.GenVar(variation, rng);
     }
     
     
@@ -194,53 +195,59 @@ protected:
                 std::cerr << "Warning: grey_code is empty" << std::endl;
                 return;
             }
-            
+
             std::vector<int> binary_code(grey_code.size(), 0);
-            int bits_per_param = int_bits_ + frac_bits_;
-            
-            // Преобразование из кода Грея в бинарный
+            // Layout per param: [1 sign bit | int_bits | frac_bits]
+            int bits_per_param = 1 + int_bits_ + frac_bits_;
+
+            // Grey -> Binary
             for (size_t i = 0; i < grey_code.size(); ++i) {
-                if (i % bits_per_param == 0) {
+                int base = static_cast<int>(i) - (static_cast<int>(i) % bits_per_param);
+                if (static_cast<int>(i) == base) {
                     binary_code[i] = grey_code[i];
                 } else {
                     binary_code[i] = binary_code[i - 1] ^ grey_code[i];
                 }
             }
-            
-            // Преобразование бинарных блоков в числа
+
+            // Binary -> Float
             auto& params = const_cast<NetOper&>(net_oper_).get_parameters();
             params.clear();
-            
-            double g1 = std::pow(2.0, int_bits_ - 1);  // 2^(int_bits - 1)
-            
+
+            double g1 = std::pow(2.0, int_bits_ - 1);
+
             for (int param_idx = 0; param_idx < num_params_; ++param_idx) {
-                double value = 0.0;
-                double g = g1;
-                
-                int start_bit = param_idx * bits_per_param;
-                int end_bit = start_bit + int_bits_;
-                
-                if (end_bit > static_cast<int>(binary_code.size())) {
+                int base = param_idx * bits_per_param;
+
+                if (base + bits_per_param > static_cast<int>(binary_code.size())) {
                     break;
                 }
-                
-                // Целая часть
-                for (int i = start_bit; i < end_bit; ++i) {
+
+                // Sign bit
+                bool negative = (binary_code[base] == 1);
+
+                double value = 0.0;
+                double g = g1;
+
+                // Integer part (after sign bit)
+                int int_start = base + 1;
+                int int_end = int_start + int_bits_;
+                for (int i = int_start; i < int_end; ++i) {
                     value += g * binary_code[i];
                     g /= 2.0;
                 }
-                
-                // Дробная часть
-                int frac_end = std::min(start_bit + bits_per_param, 
-                                        static_cast<int>(binary_code.size()));
-                for (int i = end_bit; i < frac_end; ++i) {
+
+                // Fractional part
+                int frac_end = base + bits_per_param;
+                for (int i = int_end; i < frac_end; ++i) {
                     value += g * binary_code[i];
                     g /= 2.0;
                 }
-                
+
+                if (negative) value = -value;
                 params.push_back(static_cast<float>(value));
             }
-            
+
         } catch (const std::exception& e) {
             std::cerr << "Error in greyToVector: " << e.what() << std::endl;
             throw;

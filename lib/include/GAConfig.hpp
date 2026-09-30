@@ -37,4 +37,7 @@ struct GAConfig {
     // === Колбэки ===
     std::function<void(int gen, float avg_fitness)> on_generation_end = nullptr;
     std::function<void(const ISolution& best_solution)> on_algorithm_end = nullptr;
+    /// Вызывается каждый validation_interval поколений с лучшим NetOper
+    std::function<void(int gen, const NetOper& best_nop)> on_validation = nullptr;
+    int validation_interval = 10;
 };

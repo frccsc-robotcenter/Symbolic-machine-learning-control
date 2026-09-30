@@ -116,14 +116,19 @@ void NetOper::setPsi(const std::vector<std::vector<int>>& newMatrix)
 // ROControl
 void NetOper::calcResult(const std::vector<float>& x_in, std::vector<float>& y_out)
 {
+    // Large finite values instead of ±Infinity.
+    // Infinity propagates through +,-,* and corrupts outputs.
+    // ±1e30 is "large enough" for max/min identity, but finite.
+    constexpr float BigVal = 1e30f;
+
     for(size_t i=0; i < m_matrix.size(); ++i)
     {
         if (m_matrix[i][i] == 2)
             z[i] = 1.0f;
         else if (m_matrix[i][i] == 3)
-            z[i] = (-1.0f) * Infinity;
+            z[i] = -BigVal;
         else if (m_matrix[i][i] == 4)
-            z[i] = Infinity;
+            z[i] = BigVal;
         else
             z[i] = 0.0f;
     }
@@ -142,9 +147,14 @@ void NetOper::calcResult(const std::vector<float>& x_in, std::vector<float>& y_o
         {
             if (m_matrix[i][j] == 0)
                 continue;
-            
+
             auto zz = getUnaryOperationResult(m_matrix[i][j], z[i]);
             z[j] = getBinaryOperationResult(m_matrix[j][j], z[j], zz);
+
+            // Clamp non-finite values (NaN from overflow like Infinity*0).
+            // Don't clamp finite values — let them propagate naturally.
+            if (!std::isfinite(z[j]))
+                z[j] = 0.0f;
         }
     }
     for(size_t i = 0; i < m_nodesForOutput.size(); ++i)
@@ -179,59 +189,53 @@ bool NetOper::TestSource(int j)
     return true;
 }
 
-void NetOper::GenVar(std::vector<int>& w)
+void NetOper::GenVar(std::vector<int>& w, std::mt19937& rng)
 {
-    // Элементарные операции
     if (w.size() < 4) w.resize(4);
 
-    int L = static_cast<int>(m_matrix.size()); // количество узлов = размер Psi
+    int L = static_cast<int>(m_matrix.size());
     int kW = static_cast<int>(m_unaryFuncMap.size());
     int kV = static_cast<int>(m_binaryFuncMap.size());
 
-    w[0] = rand() % 4; // random(4)
+    std::uniform_int_distribution<int> dist_op(0, 3);
+    std::uniform_int_distribution<int> dist_unary(1, kW);   // [1, kW] inclusive
+    std::uniform_int_distribution<int> dist_binary(1, kV);  // [1, kV] inclusive
+
+    w[0] = dist_op(rng);
 
     switch (w[0])
     {
     case 0:
     case 2:
-    case 3: // замена недиагонального элемента, добавление и удаление дуги
-        w[1] = rand() % (L - 1);
-        w[2] = rand() % (L - w[1] - 1) + w[1] + 1;
-        w[3] = rand() % kW;
-        // if (w[3] == 0)
-        //     w[3] = 1;
-        w[3] = (rand() % kW) + 1; 
+    case 3: {
+        std::uniform_int_distribution<int> dist_i(0, L - 2);
+        w[1] = dist_i(rng);
+        std::uniform_int_distribution<int> dist_j(w[1] + 1, L - 1);
+        w[2] = dist_j(rng);
+        w[3] = dist_unary(rng);
         break;
+    }
 
-    case 1: // замена диагонального элемента
-        w[1] = rand() % L;
+    case 1: {
+        std::uniform_int_distribution<int> dist_node(0, L - 1);
+        w[1] = dist_node(rng);
 
-        // while (w[1] < L && !TestSource(w[1]))
-        //     w[1]++;
-
-                int start = w[1];
+        int start = w[1];
         bool found = false;
         for (int i = 0; i < L; ++i) {
-            int idx = (start + i) % L; // Зацикленный индекс
+            int idx = (start + i) % L;
             if (TestSource(idx)) {
                 w[1] = idx;
                 found = true;
                 break;
             }
         }
-        
-        // Если вдруг (теоретически невозможно) не нашли, ставим 0
-        if (!found) w[1] = 0; 
-
-        w[2] = w[1]; // Диагональ: строка равна столбцу
-
+        if (!found) w[1] = 0;
 
         w[2] = w[1];
-        // w[3] = rand() % kV;
-        // if (w[3] == 0)
-        //     w[3] = 1;
-        w[3] = (rand() % kV) + 1;
+        w[3] = dist_binary(rng);
         break;
+    }
     }
 }
 

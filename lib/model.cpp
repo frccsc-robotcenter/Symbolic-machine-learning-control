@@ -68,7 +68,14 @@ Model::Model(const State &state, float dt, const std::string &onnx_path)
       : m_currentState(state),
         m_dt(dt),
         m_env(ORT_LOGGING_LEVEL_WARNING, "RobotNN"),
-        m_session(m_env, onnx_path.c_str(), Ort::SessionOptions{}) {}
+        m_session(m_env, onnx_path.c_str(), Ort::SessionOptions{}) {
+    // Cache input/output names once
+    Ort::AllocatorWithDefaultOptions alloc;
+    Ort::AllocatedStringPtr in = m_session.GetInputNameAllocated(0, alloc);
+    m_input_name = in.get();
+    Ort::AllocatedStringPtr out = m_session.GetOutputNameAllocated(0, alloc);
+    m_output_name = out.get();
+}
 
 void Model::setState(const Model::State &state) 
 { 
@@ -107,9 +114,6 @@ Model::State Model::nextStateFromControl(const Model::Control &u)
 
 
 Model::State Model::nextNNStateFromControl(const Model::Control &u) {
-    // вход: [v_current, w_current, v_control, w_control, dt]
-    // float u_v = k * (u.left + u.right);
-    // float u_w = k_w * k * (u.left - u.right);
     std::array<float, 5> input_vals = {m_v, m_w, u.left, u.right, m_dt};
     std::array<int64_t, 2> dims{1, 5};
 
@@ -119,37 +123,21 @@ Model::State Model::nextNNStateFromControl(const Model::Control &u) {
     Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
         mem_info, input_vals.data(), input_vals.size(), dims.data(), dims.size());
 
-    Ort::AllocatorWithDefaultOptions allocator;
+    const char* in_name = m_input_name.c_str();
+    const char* out_name = m_output_name.c_str();
 
-    // Получаем имена входов/выходов
-    Ort::AllocatedStringPtr input_name = m_session.GetInputNameAllocated(0, allocator);
-    Ort::AllocatedStringPtr output_name = m_session.GetOutputNameAllocated(0, allocator);
-
-    std::vector<const char*> input_names{input_name.get()};
-    std::vector<const char*> output_names{output_name.get()};
-
-    // Запуск инференса
     auto outputs = m_session.Run(Ort::RunOptions{nullptr},
-                                input_names.data(), &input_tensor, 1,
-                                output_names.data(), 1);
+                                 &in_name, &input_tensor, 1,
+                                 &out_name, 1);
 
-    // достаём результат
     float *out_data = outputs[0].GetTensorMutableData<float>();
-    m_v = out_data[0]; // новая линейная скорость
-    m_w = out_data[1]; // новая угловая скорость
+    m_v = out_data[0];
+    m_w = out_data[1];
 
+    auto vel = State{m_v * cosf(m_currentState.yaw),
+                     m_v * sinf(m_currentState.yaw),
+                     m_w};
 
-      // TETS
-
-    // return  State{(m_v) * cosf(m_currentState.yaw),
-    //           (m_v) * sinf(m_currentState.yaw),
-    //           (m_w)};
-
-    auto vel =  State{(m_v) * cosf(m_currentState.yaw),
-          (m_v) * sinf(m_currentState.yaw),
-          (m_w)};
-    
     return nextStateFromVelocity(vel);
-
-  }
+}
 

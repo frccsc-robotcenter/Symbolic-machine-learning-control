@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-class Controller 
+class Controller
 {
 public:
   Controller(const Model::State &goalState, NetOper &netOper);
@@ -20,11 +20,18 @@ public:
   void setGoal(Model::State newGoal);
 
   NetOper& netOper();
-  
+
   void setUMax(float newUMax);
+
+  /// Wrap angle to (-pi, pi]
+  static float wrapAngle(float a);
+
+  /// Features fed into NetOper: {dist, bearing_err, yaw_err}
+  static void computeFeatures(const Model::State &goal, const Model::State &curr,
+                              float &dist, float &bearing_err, float &yaw_err);
 
 protected:
   Model::State m_goal;
-  NetOper m_netOper;
-  float Umax = 1.0f; // was 0.4 - OK
+  NetOper& m_netOper;
+  float Umax = 1.0f;
 };

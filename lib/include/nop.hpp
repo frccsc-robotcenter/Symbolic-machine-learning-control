@@ -8,6 +8,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <random>
 
 
 // class network operator
@@ -91,7 +92,7 @@ public:
     bool saveParametersToFile(const std::string& filepath) const;
 
 
-    void GenVar(std::vector<int>& w);
+    void GenVar(std::vector<int>& w, std::mt19937& rng);
     void Variations(const std::vector<int>& w);
 
     std::vector<float>& get_z();

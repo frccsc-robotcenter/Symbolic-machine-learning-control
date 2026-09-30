@@ -11,6 +11,7 @@
 #include <set>
 #include <cmath>
 #include <algorithm>
+#include <random>
 #include "base_config.hpp"
 #include "model.hpp"
 
@@ -43,9 +44,12 @@ struct RobotProblemConfig : public BaseConfig {
     
     /// Кастомные загруженные траектории (опционально)
     std::vector<Model::State> custom_train_trajectories;
-    
+
     /// Флаг использования кастомных траекторий
     bool use_custom_trajectories = false;
+
+    /// Seed для генерации случайных стартовых состояний
+    unsigned int train_seed = 42;
     
     
     // ===== ИНИЦИАЛИЗАЦИЯ =====
@@ -171,24 +175,76 @@ struct RobotProblemConfig : public BaseConfig {
     
     
     /**
-     * @brief Генерировать стартовые траектории для обучения
-     * 
-     * @return Вектор начальных состояний (по числу num_trajectories)
+     * @brief Генерировать разнообразные стартовые состояния для обучения
+     *
+     * Слои: 8 углов куба, осевые старты (θ=0), кольцо по окружности,
+     * случайные равномерные точки. Без дублирования углов.
      */
     std::vector<Model::State> generateTrainTrajectories() const {
-        // Если загружены кастомные траектории - используем их
         if (use_custom_trajectories && !custom_train_trajectories.empty()) {
             return custom_train_trajectories;
         }
-        
-        // Иначе генерируем стандартные комбинации
+
         std::vector<Model::State> states;
-        for (int i = 0; i < num_trajectories; ++i) {
+        states.reserve(static_cast<size_t>(std::max(1, num_trajectories)));
+
+        const float x_min = qyminc[0], x_max = qymaxc[0];
+        const float y_min = qyminc[1], y_max = qymaxc[1];
+        const float th_min = qyminc[2], th_max = qymaxc[2];
+        const float x_mid = 0.5f * (x_min + x_max);
+        const float y_mid = 0.5f * (y_min + y_max);
+        const float th_mid = 0.5f * (th_min + th_max);
+
+        // 1) 8 углов куба (обязательный слой)
+        for (int i = 0; i < 8; ++i) {
             states.push_back(Model::State{
-                (i & 4) ? qymaxc[0] : qyminc[0],
-                (i & 2) ? qymaxc[1] : qyminc[1],
-                (i & 1) ? qymaxc[2] : qyminc[2]
+                (i & 4) ? x_max : x_min,
+                (i & 2) ? y_max : y_min,
+                (i & 1) ? th_max : th_min
             });
+        }
+
+        // 2) Осевые старты с θ = th_mid (обычно 0) — критично для «залипания»
+        const float axis_dist = 0.9f * std::max(std::fabs(x_max), std::fabs(y_max));
+        const float axis_mid = 0.45f * axis_dist;
+        for (float d : {axis_dist, axis_mid}) {
+            states.push_back(Model::State{ d,  y_mid, th_mid});
+            states.push_back(Model::State{-d,  y_mid, th_mid});
+            states.push_back(Model::State{x_mid,  d,  th_mid});
+            states.push_back(Model::State{x_mid, -d,  th_mid});
+        }
+
+        // 3) Кольцо по окружности, случайный курс
+        std::mt19937 rng(train_seed);
+        std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+        for (float r : {1.0f, 3.0f, 5.0f}) {
+            for (int k = 0; k < 8; ++k) {
+                const float ang = (static_cast<float>(k) / 8.0f) * 2.0f * 3.14159265f;
+                states.push_back(Model::State{
+                    r * std::cos(ang),
+                    r * std::sin(ang),
+                    th_min + u01(rng) * (th_max - th_min)
+                });
+            }
+        }
+
+        // 4) Случайные равномерные точки до num_trajectories
+        std::uniform_real_distribution<float> ux(x_min, x_max);
+        std::uniform_real_distribution<float> uy(y_min, y_max);
+        std::uniform_real_distribution<float> uth(th_min, th_max);
+        while (static_cast<int>(states.size()) < num_trajectories) {
+            states.push_back(Model::State{ux(rng), uy(rng), uth(rng)});
+        }
+
+        // Если num_trajectories меньше структурного минимума — сохраняем
+        // углы и оси (критично против залипания), усекая кольцо/случайные.
+        const size_t keep_min = 16; // 8 углов + 8 осевых
+        if (static_cast<int>(states.size()) > num_trajectories) {
+            if (static_cast<size_t>(num_trajectories) >= keep_min) {
+                states.resize(static_cast<size_t>(num_trajectories));
+            } else {
+                states.resize(keep_min);
+            }
         }
         return states;
     }

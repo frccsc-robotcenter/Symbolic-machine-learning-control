@@ -21,7 +21,8 @@ GANOP::GANOP(const GAConfig& config)
     }
     
     // Инициализация популяции
-    int total_bits = config.num_params * (config.int_bits + config.frac_bits);
+    // Layout per param: [1 sign bit | int_bits | frac_bits]
+    int total_bits = config.num_params * (1 + config.int_bits + config.frac_bits);
     
     population_params_.assign(config.population_size, 
                               std::vector<int>(total_bits));
@@ -103,29 +104,40 @@ void GANOP::run() {
                 }
                 
                 // ===== ЭТАП 2: Замена потомков в популяции =====
-                for (int offspring = 0; offspring < 4; ++offspring) {
-                    // Поиск worst_idx (можно оптимизировать, но так точнее соответствует оригиналу)
-                    int worst_idx = 0;
-                    int max_rank = pareto_ranks_[0];
-                    for (int i = 1; i < config_.population_size; ++i) {
-                        if (pareto_ranks_[i] > max_rank) {
-                            max_rank = pareto_ranks_[i];
-                            worst_idx = i;
-                        }
+                // Find worst once, update after each replacement
+                int worst_idx = 0;
+                int max_rank = pareto_ranks_[0];
+                for (int i = 1; i < config_.population_size; ++i) {
+                    if (pareto_ranks_[i] > max_rank) {
+                        max_rank = pareto_ranks_[i];
+                        worst_idx = i;
                     }
-                    
-                    // Замена
+                }
+
+                std::uniform_int_distribution<int> dist_idx(0, config_.population_size - 1);
+
+                for (int offspring = 0; offspring < 4; ++offspring) {
                     if (offspring_ranks[offspring] < max_rank) {
                         population_params_[worst_idx] = offspring_params[offspring];
                         population_struct_[worst_idx] = offspring_struct[offspring];
                         fitness_population_[worst_idx] = offspring_fitness[offspring];
                         pareto_ranks_[worst_idx] = offspring_ranks[offspring];
-                        
-                        std::uniform_int_distribution<int> dist_idx(0, config_.population_size - 1);
+
+                        // Refresh a few random ranks
                         for (int k = 0; k < 10; ++k) {
                             int random_idx = dist_idx(rng_);
                             if (random_idx != worst_idx) {
                                 pareto_ranks_[random_idx] = computeRank(fitness_population_[random_idx]);
+                            }
+                        }
+
+                        // Re-find worst for next offspring
+                        worst_idx = 0;
+                        max_rank = pareto_ranks_[0];
+                        for (int i = 1; i < config_.population_size; ++i) {
+                            if (pareto_ranks_[i] > max_rank) {
+                                max_rank = pareto_ranks_[i];
+                                worst_idx = i;
                             }
                         }
                     }
@@ -149,6 +161,20 @@ void GANOP::run() {
                 ? sum_fitness / static_cast<float>(config_.population_size) 
                 : 0.0f;
             config_.on_generation_end(generation, avg_fitness);
+        }
+
+        // Периодическая валидация лучшей особи
+        if (config_.on_validation &&
+            config_.validation_interval > 0 &&
+            generation % config_.validation_interval == 0) {
+            try {
+                int best_idx = getBestParetoIndex();
+                auto solution = config_.solution_factory();
+                solution->decode(population_params_[best_idx], population_struct_[best_idx]);
+                config_.on_validation(generation, solution->getNetOperConst());
+            } catch (const std::exception& e) {
+                std::cerr << "Validation callback error: " << e.what() << std::endl;
+            }
         }
     }
     
@@ -214,7 +240,7 @@ void GANOP::initializePopulation() {
     for (int i = 1; i < config_.population_size; ++i) {
         // Генерируем вариации структуры
         for (int j = 0; j < config_.num_struct_variations; ++j) {
-            nop.GenVar(population_struct_[i][j]);
+            nop.GenVar(population_struct_[i][j], rng_);
         }
         
         // Генерируем случайные параметры (как в оригинале)
@@ -227,54 +253,58 @@ void GANOP::initializePopulation() {
 
 // src/GANOP.cpp
 void GANOP::vectorToGrey(std::vector<int>& grey_code, NetOper& nop) {
-    std::vector<int> binary_code;           
-    int bits_per_param = config_.int_bits + config_.frac_bits;
-    
-    // Получаем параметры из NOP (они уже установлены через setCs(qc))
+    std::vector<int> binary_code;
+    // Layout per param: [1 sign bit | int_bits | frac_bits]
+    int bits_per_param = 1 + config_.int_bits + config_.frac_bits;
+
     auto& params = nop.get_parameters();
-    
+
     if (grey_code.size() < params.size() * bits_per_param) {
         grey_code.resize(params.size() * bits_per_param);
     }
-    
+
     if (binary_code.size() < grey_code.size()) {
         binary_code.resize(grey_code.size());
     }
-    
+
     std::fill(binary_code.begin(), binary_code.end(), 0);
-    
-    // Для каждого параметра преобразуем Float -> Binary
+
     for (size_t j = 0; j < params.size(); ++j) {
         float param = params[j];
-        
-        if (param < 0.0f) {
-            param = std::abs(param);
-        }
-        
-        int x = static_cast<int>(std::floor(param));  // целая часть
-        double r = static_cast<double>(param - static_cast<float>(x));  // дробная часть
-        
-        // Целая часть (int_bits бит)
-        int k = config_.int_bits + j * bits_per_param - 1;
-        while (k >= static_cast<int>(j * bits_per_param)) {
-            binary_code[k] = x % 2;
-            x /= 2;
+        int base = static_cast<int>(j) * bits_per_param;
+
+        // Sign bit: 0 = positive, 1 = negative
+        binary_code[base] = (param < 0.0f) ? 1 : 0;
+        param = std::abs(param);
+
+        int x = static_cast<int>(std::floor(param));
+        double r = static_cast<double>(param - static_cast<float>(x));
+
+        // Integer part (int_bits), starting after sign bit
+        int k = base + config_.int_bits;  // last bit of integer part
+        int int_end = base + 1;           // first bit after sign
+        while (k > base) {
+            if (k >= int_end) {
+                binary_code[k] = x % 2;
+                x /= 2;
+            }
             k--;
         }
-        
-        // Дробная часть (frac_bits бит)
-        k = config_.int_bits + j * bits_per_param;
-        while (k < static_cast<int>((config_.int_bits + config_.frac_bits) * (j + 1))) {
+
+        // Fractional part (frac_bits)
+        k = base + 1 + config_.int_bits;
+        int frac_end = base + bits_per_param;
+        while (k < frac_end) {
             r *= 2.0;
-            x = static_cast<int>(std::floor(r));
-            binary_code[k] = x;
-            r -= static_cast<float>(x);
+            int bit = static_cast<int>(std::floor(r));
+            binary_code[k] = bit;
+            r -= static_cast<double>(bit);
             k++;
         }
-        
-        // Binary -> Grey код для этого параметра
-        grey_code[j * bits_per_param] = binary_code[j * bits_per_param];
-        for (int i = j * bits_per_param + 1; i < (j + 1) * bits_per_param; i++) {
+
+        // Binary -> Grey
+        grey_code[base] = binary_code[base];
+        for (int i = base + 1; i < base + bits_per_param; i++) {
             grey_code[i] = binary_code[i] ^ binary_code[i - 1];
         }
     }
@@ -282,53 +312,58 @@ void GANOP::vectorToGrey(std::vector<int>& grey_code, NetOper& nop) {
 
 
 
-// src/GANOP.cpp - новый метод
 void GANOP::greyToVector(const std::vector<int>& grey_code, NetOper& nop) {
     if (grey_code.empty()) return;
-    
+
     std::vector<int> binary_code(grey_code.size(), 0);
-    int bits_per_param = config_.int_bits + config_.frac_bits;
-    
+    // Layout per param: [1 sign bit | int_bits | frac_bits]
+    int bits_per_param = 1 + config_.int_bits + config_.frac_bits;
+
     // Grey -> Binary
     for (size_t i = 0; i < grey_code.size(); ++i) {
-        if (i % bits_per_param == 0) {
+        int base = static_cast<int>(i) - (static_cast<int>(i) % bits_per_param);
+        if (static_cast<int>(i) == base) {
             binary_code[i] = grey_code[i];
         } else {
             binary_code[i] = binary_code[i - 1] ^ grey_code[i];
         }
     }
-    
+
     // Binary -> Float
     auto& params = nop.get_parameters();
     params.clear();
-    
+
     double g1 = std::pow(2.0, config_.int_bits - 1);
-    
+
     for (int param_idx = 0; param_idx < config_.num_params; ++param_idx) {
-        double value = 0.0;
-        double g = g1;
-        
-        int start_bit = param_idx * bits_per_param;
-        int end_bit = start_bit + config_.int_bits;
-        
-        if (end_bit > static_cast<int>(binary_code.size())) {
+        int base = param_idx * bits_per_param;
+
+        if (base + bits_per_param > static_cast<int>(binary_code.size())) {
             break;
         }
-        
-        // Целая часть
-        for (int i = start_bit; i < end_bit; ++i) {
+
+        // Sign bit
+        bool negative = (binary_code[base] == 1);
+
+        double value = 0.0;
+        double g = g1;
+
+        // Integer part (starts after sign bit)
+        int int_start = base + 1;
+        int int_end = int_start + config_.int_bits;
+        for (int i = int_start; i < int_end; ++i) {
             value += g * binary_code[i];
             g /= 2.0;
         }
-        
-        // Дробная часть
-        int frac_end = std::min(start_bit + bits_per_param,
-                                static_cast<int>(binary_code.size()));
-        for (int i = end_bit; i < frac_end; ++i) {
+
+        // Fractional part
+        int frac_end = base + bits_per_param;
+        for (int i = int_end; i < frac_end; ++i) {
             value += g * binary_code[i];
             g /= 2.0;
         }
-        
+
+        if (negative) value = -value;
         params.push_back(static_cast<float>(value));
     }
 }
@@ -427,14 +462,17 @@ void GANOP::crossover(int p1, int p2,
                       std::vector<std::vector<std::vector<int>>>& offspring_struct) {
     
     std::uniform_int_distribution<int> dist_bit(0, 1);
-    std::uniform_int_distribution<int> dist_struct(0, config_.num_struct_variations - 1);
-    std::uniform_int_distribution<int> dist_param(0, config_.num_params * 
-                                                       (config_.int_bits + config_.frac_bits) - 1);
-    
-    int crossover_point_struct = dist_struct(rng_);
+    int bits_per_param = 1 + config_.int_bits + config_.frac_bits;
+    std::uniform_int_distribution<int> dist_param(0, config_.num_params * bits_per_param - 1);
+
+    int crossover_point_struct = 0;
+    if (config_.num_struct_variations > 0) {
+        std::uniform_int_distribution<int> dist_struct(0, config_.num_struct_variations - 1);
+        crossover_point_struct = dist_struct(rng_);
+    }
     int crossover_point_param = dist_param(rng_);
-    
-    int total_bits = config_.num_params * (config_.int_bits + config_.frac_bits);
+
+    int total_bits = config_.num_params * bits_per_param;
     
     // Инициализация потомков
     for (int i = 0; i < 4; ++i) {
@@ -492,17 +530,18 @@ void GANOP::mutate(std::vector<int>& chromosome_params,
                    std::vector<std::vector<int>>& chromosome_struct) {
     
     std::uniform_int_distribution<int> dist_bit(0, 1);
-    std::uniform_int_distribution<int> dist_struct(0, config_.num_struct_variations - 1);
     std::uniform_int_distribution<int> dist_param(0, static_cast<int>(chromosome_params.size()) - 1);
-    
+
     // Мутация параметров (инвертирование случайного бита)
     int mutant_bit = dist_param(rng_);
-    chromosome_params[mutant_bit] = dist_bit(rng_);  // ← Было: 1 - chromosome_params[mutant_bit]
-    
+    chromosome_params[mutant_bit] = 1 - chromosome_params[mutant_bit];
+
     // Мутация структуры (генерация новой вариации через NOP.GenVar)
+    if (config_.num_struct_variations <= 0) return;
+    std::uniform_int_distribution<int> dist_struct(0, config_.num_struct_variations - 1);
     int mutant_struct = dist_struct(rng_);
     
-    nop_template_.GenVar(chromosome_struct[mutant_struct]);
+    nop_template_.GenVar(chromosome_struct[mutant_struct], rng_);
     // Нужен доступ к NetOper для вызова GenVar
     // auto temp_solution = config_.solution_factory();
     // auto robot_sol = dynamic_cast<RobotSolution*>(temp_solution.get());

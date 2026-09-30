@@ -4,9 +4,8 @@
 #include <cmath>
 
 constexpr float Eps = pow(10, -8.);
-constexpr size_t PokMax = 8; // what is it ????
-// todo try numeric_limits<float>::max()
-constexpr float Infinity = pow(10, 8.);
+constexpr int PokMax = 8;
+constexpr float Infinity = 1000.0f;
 
 // Unary functions
 float ro_1(float inp);

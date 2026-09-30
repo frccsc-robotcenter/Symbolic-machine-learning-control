@@ -15,6 +15,7 @@ set(Sources
     reader_test.cpp
     base_functions_test.cpp
     nop_extended_test.cpp
+    ganop_test.cpp
 )
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ldl")

@@ -54,19 +54,17 @@ TEST(BaseFunctions, ro_6_exp) {
 
 // Test ro_7: log with epsilon protection
 TEST(BaseFunctions, ro_7_log) {
-  // Note: PokMax is size_t (unsigned), so -PokMax underflows to a large value
-  // This makes exp(-PokMax) effectively infinity, so the condition
-  // fabs(inp) < exp(-PokMax) is always true, always returning log(Eps)
-  // This is a bug in the implementation, but we test actual behavior
-  
-  // Currently always returns log(Eps) due to unsigned integer bug
-  EXPECT_FLOAT_EQ(ro_7(1.0f), log(Eps));
-  EXPECT_FLOAT_EQ(ro_7(100.0f), log(Eps));
-  EXPECT_FLOAT_EQ(ro_7(expf(1.0f)), log(Eps));
-  
-  // If the bug were fixed, these would be the expected values:
-  // EXPECT_FLOAT_EQ(ro_7(1.0f), 0.0f);  // log(1) = 0
-  // EXPECT_NEAR(ro_7(expf(1.0f)), 1.0f, 0.0001f);  // log(e) = 1
+  // Normal values: log(|x|)
+  EXPECT_FLOAT_EQ(ro_7(1.0f), 0.0f);                    // log(1) = 0
+  EXPECT_NEAR(ro_7(expf(1.0f)), 1.0f, 0.0001f);         // log(e) = 1
+  EXPECT_NEAR(ro_7(100.0f), log(100.0f), 0.0001f);
+
+  // Very small values: epsilon protection
+  float tiny = expf(-PokMax) / 2.0f;
+  EXPECT_FLOAT_EQ(ro_7(tiny), log(Eps));
+
+  // Zero: epsilon protection
+  EXPECT_FLOAT_EQ(ro_7(0.0f), log(Eps));
 }
 
 // Test ro_8: sigmoid-like function

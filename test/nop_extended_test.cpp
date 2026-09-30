@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <fstream>
 #include <cstdio>
+#include <random>
 
 // Test file I/O operations for matrices
 TEST(NOP_FileIO, save_and_load_matrix) {
@@ -149,7 +150,8 @@ TEST(NOP_Genetic, genvar_returns_valid_vector) {
     netOper.setNodesForParams({1});
     
     std::vector<int> w(4);
-    EXPECT_NO_THROW(netOper.GenVar(w));
+    std::mt19937 rng(42);
+    EXPECT_NO_THROW(netOper.GenVar(w, rng));
     EXPECT_EQ(w.size(), 4);
     
     // w[0] should be 0-3
